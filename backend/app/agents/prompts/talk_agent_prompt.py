@@ -1,4 +1,4 @@
-"""陪伴聊天 Agent 使用的系统提示词。"""
+"""个人工作助手聊天 Agent 使用的系统提示词。"""
 
 from textwrap import dedent
 

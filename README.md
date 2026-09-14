@@ -2,16 +2,28 @@
 
 一个使用 Vue、FastAPI、LangGraph 和 DeepSeek 实现的个人工作助手。账号之间的聊天与学习记录互相隔离，LangGraph 通过 `AsyncRedisSaver` 为每段对话维护短期记忆。
 
-左侧的学习计时器会在开始时创建学习会话，在停止时把结束时间和学习秒数保存到 MySQL。
+“当人了吗”页面的计时器会在开始时创建学习会话，在停止时把结束时间和学习秒数保存到 MySQL。
+
+侧边栏的“我的爱好”页面支持按账号添加、编辑和删除爱好，并为后续生成今日计划提供结构化兴趣数据。
+
+“今日计划”会读取当前账号的爱好，通过 LangGraph 判断外部影响因素并从运行时工具注册表选择能力；天气只是当前默认工具，后续增加赛事或电影工具不需要修改 Graph 主流程。天气与城市解析使用高德 Web 服务，建议时段依据标准预报展示为“白天”或“夜间”。计划按账号和日期保存到 MySQL。
 
 桌面端侧边栏的“当人了吗”页面按天展示学习时长。默认查询最近 15 天，也可以指定开始日期和结束日期；点击柱状图日期可以查看当天的具体学习时间段，跨越午夜的会话会按每天实际覆盖的时间拆分。
 
 ## 项目结构
 
 ```text
-backend/        FastAPI 与 LangGraph 后端
-frontend/       Vue 3 + Vite 前端
-.env            本地 DeepSeek 配置，不会被 Git 跟踪
+backend/
+├─ app/
+│  ├─ agents/            LangGraph、模型调用与 Agent 提示词
+│  ├─ routers/           认证、聊天、学习和爱好接口
+│  ├─ config.py          环境配置
+│  ├─ database.py        数据库连接与结构初始化
+│  ├─ models.py          SQLAlchemy 数据模型
+│  └─ main.py            FastAPI 应用装配入口
+└─ tests/                后端自动化测试
+frontend/                Vue 3 + Vite 前端
+.env                     本地配置，不会被 Git 跟踪
 ```
 
 ## 启动后端
@@ -61,6 +73,7 @@ npm run build
 
 - `DEEPSEEK_API_KEY`：DeepSeek API Key
 - `DEEPSEEK_MODEL`：模型名称，默认 `deepseek-chat`
+- `AMAP_API_KEY`：高德开放平台的 Web 服务 API Key，用于国内城市解析和天气预报
 - `MYSQL_HOST`：MySQL 地址，默认 `127.0.0.1`
 - `MYSQL_PORT`：MySQL 端口，默认 `3306`
 - `MYSQL_USER`：MySQL 用户名，默认 `root`

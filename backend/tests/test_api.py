@@ -9,11 +9,22 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app.auth import hash_session_token, utc_now
+from backend.app.routers.auth import hash_session_token, utc_now
 from backend.app.database import Base, get_db
-from backend.app.graph import create_chat_graph
+from backend.app.agents.chat_graph import create_chat_graph
+from backend.app.agents.plan_agent import PlanDraft, PlanItem
+from backend.app.agents.weather import LocationNotFoundError, ResolvedLocation
 from backend.app.main import app
-from backend.app.models import ApplicationState, AuthSession, ChatThread, StudySession, User
+from backend.app.models import (
+    ApplicationState,
+    AuthSession,
+    ChatThread,
+    DailyPlan,
+    Hobby,
+    PlanPreference,
+    StudySession,
+    User,
+)
 
 
 class FakeGraph:
@@ -31,6 +42,31 @@ class FakeGraph:
     async def aget_state(self, config):
         thread_id = config["configurable"]["thread_id"]
         return SimpleNamespace(values={"messages": self.states.get(thread_id, [])})
+
+
+class FakePlanGraph:
+    def __init__(self):
+        self.calls = []
+        self.should_fail = False
+
+    async def ainvoke(self, state):
+        if self.should_fail:
+            raise RuntimeError("model failed")
+        self.calls.append(state)
+        return {
+            "result": PlanDraft(
+                summary=f"今日安排已生成 {len(self.calls)}",
+                items=[
+                    PlanItem(
+                        hobby_id=hobby.id,
+                        hobby_name=hobby.name,
+                        suitability="no_check",
+                        advice="安排一段专注时间。",
+                    )
+                    for hobby in state["hobbies"]
+                ],
+            )
+        }
 
 
 @pytest.fixture
@@ -53,7 +89,9 @@ def api_context(monkeypatch):
             db.close()
 
     fake_graph = FakeGraph()
+    fake_plan_graph = FakePlanGraph()
     monkeypatch.setattr(app.state, "chat_graph", fake_graph, raising=False)
+    monkeypatch.setattr(app.state, "plan_graph", fake_plan_graph, raising=False)
     app.dependency_overrides[get_db] = override_get_db
     client = TestClient(app)
 
@@ -164,7 +202,7 @@ def test_study_records_are_isolated_between_users(api_context, monkeypatch):
     times = iter(
         [datetime(2026, 9, 12, 8, 0, 0), datetime(2026, 9, 12, 8, 1, 30)]
     )
-    monkeypatch.setattr("backend.app.study.utc_now", lambda: next(times))
+    monkeypatch.setattr("backend.app.routers.study.utc_now", lambda: next(times))
 
     started = alice.post("/api/study/start")
     session_id = started.json()["session_id"]
@@ -254,3 +292,188 @@ def test_protected_routes_require_login(api_context):
     client, _, _ = api_context
     assert client.post("/api/chat/threads").status_code == 401
     assert client.post("/api/study/start").status_code == 401
+    assert client.get("/api/hobbies").status_code == 401
+    assert client.get("/api/plans/today").status_code == 401
+
+
+def test_hobby_crud_and_duplicate_name(api_context):
+    client, _, _ = api_context
+    register(client, "alice")
+
+    created = client.post(
+        "/api/hobbies",
+        json={"name": "  骑车  ", "note": "  周末骑绿道  "},
+    )
+    assert created.status_code == 201
+    hobby_id = created.json()["id"]
+    assert created.json()["name"] == "骑车"
+    assert created.json()["note"] == "周末骑绿道"
+
+    assert client.post("/api/hobbies", json={"name": "骑车"}).status_code == 409
+    assert [item["name"] for item in client.get("/api/hobbies").json()] == ["骑车"]
+
+    updated = client.put(
+        f"/api/hobbies/{hobby_id}",
+        json={"name": "公路骑行", "note": "天气好时骑 30 公里"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "公路骑行"
+
+    assert client.delete(f"/api/hobbies/{hobby_id}").status_code == 204
+    assert client.get("/api/hobbies").json() == []
+
+
+def test_hobbies_are_isolated_and_validated(api_context):
+    alice, _, _ = api_context
+    bob = TestClient(app)
+    register(alice, "alice")
+    register(bob, "bobby")
+
+    hobby_id = alice.post(
+        "/api/hobbies",
+        json={"name": "CS 比赛", "note": "只看喜欢的队伍"},
+    ).json()["id"]
+
+    assert bob.get("/api/hobbies").json() == []
+    assert bob.put(
+        f"/api/hobbies/{hobby_id}",
+        json={"name": "越权修改", "note": ""},
+    ).status_code == 404
+    assert bob.delete(f"/api/hobbies/{hobby_id}").status_code == 404
+
+    assert alice.post("/api/hobbies", json={"name": "   "}).status_code == 422
+    assert alice.post(
+        "/api/hobbies",
+        json={"name": "电影", "note": "字" * 1001},
+    ).status_code == 422
+
+
+def test_plan_location_generation_and_daily_overwrite(api_context, monkeypatch):
+    client, testing_session, _ = api_context
+    register(client, "alice")
+
+    async def fake_geocode(city):
+        return ResolvedLocation(
+            city_query=city,
+            city_name="成都",
+            admin1="四川省",
+            adcode="510100",
+            latitude=30.67,
+            longitude=104.07,
+        )
+
+    monkeypatch.setattr("backend.app.routers.plans.geocode_china_city", fake_geocode)
+    assert client.get("/api/plans/today").json() == {"location": None, "plan": None}
+    assert client.post("/api/plans/today/generate").status_code == 409
+
+    saved_location = client.put("/api/plans/location", json={"city": "成都"})
+    assert saved_location.status_code == 200
+    assert saved_location.json()["admin1"] == "四川省"
+    assert saved_location.json()["adcode"] == "510100"
+    assert client.post("/api/plans/today/generate").status_code == 409
+
+    client.post("/api/hobbies", json={"name": "读书", "note": "读技术书"})
+    first = client.post("/api/plans/today/generate")
+    second = client.post("/api/plans/today/generate")
+    assert first.status_code == 200
+    assert second.json()["summary"] == "今日安排已生成 2"
+
+    with testing_session() as db:
+        assert len(db.scalars(select(DailyPlan)).all()) == 1
+
+
+def test_unknown_plan_location_returns_422(api_context, monkeypatch):
+    client, _, _ = api_context
+    register(client, "alice")
+
+    async def missing_city(_city):
+        raise LocationNotFoundError("没有找到这个国内城市")
+
+    monkeypatch.setattr("backend.app.routers.plans.geocode_china_city", missing_city)
+    response = client.put("/api/plans/location", json={"city": "不存在的城市"})
+    assert response.status_code == 422
+
+
+def test_plan_without_location_can_generate_when_no_tool_needs_it(api_context):
+    client, _, _ = api_context
+    register(client, "alice")
+    client.post("/api/hobbies", json={"name": "读书"})
+
+    response = client.post("/api/plans/today/generate")
+
+    assert response.status_code == 200
+    assert response.json()["location"] is None
+
+
+def test_plans_are_isolated_and_failed_generation_keeps_old_plan(api_context, monkeypatch):
+    alice, _, _ = api_context
+    bob = TestClient(app)
+    register(alice, "alice")
+    register(bob, "bobby")
+
+    async def fake_geocode(city):
+        return ResolvedLocation(
+            city_query=city,
+            city_name="成都",
+            admin1="四川省",
+            adcode="510100",
+            latitude=30.67,
+            longitude=104.07,
+        )
+
+    monkeypatch.setattr("backend.app.routers.plans.geocode_china_city", fake_geocode)
+    alice.put("/api/plans/location", json={"city": "成都"})
+    alice.post("/api/hobbies", json={"name": "读书"})
+    original = alice.post("/api/plans/today/generate").json()
+
+    assert bob.get("/api/plans/today").json() == {"location": None, "plan": None}
+    app.state.plan_graph.should_fail = True
+    assert alice.post("/api/plans/today/generate").status_code == 502
+    restored = alice.get("/api/plans/today").json()["plan"]
+    assert restored["summary"] == original["summary"]
+
+
+def test_legacy_location_without_adcode_requires_reset_but_old_plan_is_readable(api_context):
+    client, testing_session, _ = api_context
+    register(client, "alice")
+    with testing_session.begin() as db:
+        user_id = db.scalar(select(User.id).where(User.username_normalized == "alice"))
+        db.add(
+            PlanPreference(
+                user_id=user_id,
+                city_query="绵阳",
+                city_name="绵阳",
+                admin1="四川省",
+                latitude=31.47,
+                longitude=104.68,
+                timezone="Asia/Shanghai",
+                updated_at=datetime(2026, 9, 14, 8, 0, 0),
+            )
+        )
+        db.add(
+            DailyPlan(
+                user_id=user_id,
+                plan_date=datetime.now().date(),
+                content={
+                    "summary": "旧计划仍可查看",
+                    "weather_summary": "旧天气摘要",
+                    "location": {
+                        "city_query": "绵阳",
+                        "city_name": "绵阳",
+                        "admin1": "四川省",
+                        "latitude": 31.47,
+                        "longitude": 104.68,
+                        "timezone": "Asia/Shanghai",
+                    },
+                    "items": [],
+                },
+                generated_at=datetime(2026, 9, 14, 8, 0, 0),
+            )
+        )
+
+    response = client.get("/api/plans/today")
+
+    assert response.status_code == 200
+    assert response.json()["location"] is None
+    assert response.json()["plan"]["summary"] == "旧计划仍可查看"
+    assert response.json()["plan"]["context_summary"] == "旧天气摘要"

@@ -10,9 +10,9 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from .config import get_settings
-from .database import get_db
-from .models import ApplicationState, AuthSession, ChatThread, StudySession, User
+from ..config import get_settings
+from ..database import get_db
+from ..models import ApplicationState, AuthSession, ChatThread, StudySession, User
 
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])

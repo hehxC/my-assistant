@@ -7,9 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from ..database import get_db
+from ..models import StudySession
 from .auth import CurrentUser
-from .database import get_db
-from .models import StudySession
 
 
 router = APIRouter(prefix="/api/study", tags=["study"])

@@ -55,6 +55,16 @@ def create_tables() -> None:
                 text("CREATE INDEX ix_study_sessions_user_id ON study_sessions (user_id)")
             )
 
+    plan_columns = {
+        column["name"] for column in inspect(engine).get_columns("plan_preferences")
+    }
+    # 旧地点来自 Open-Meteo，没有高德天气需要的行政区编码，保留 NULL 让用户重新设置。
+    if "adcode" not in plan_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE plan_preferences ADD COLUMN adcode VARCHAR(20) NULL")
+            )
+
     with SessionLocal.begin() as db:
         if db.scalar(select(ApplicationState).where(ApplicationState.id == 1)) is None:
             db.add(ApplicationState(id=1))

@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -57,3 +57,40 @@ class StudySession(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class Hobby(Base):
+    __tablename__ = "hobbies"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_hobbies_user_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class PlanPreference(Base):
+    __tablename__ = "plan_preferences"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    city_query: Mapped[str] = mapped_column(String(100), nullable=False)
+    city_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    admin1: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    adcode: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    timezone: Mapped[str] = mapped_column(String(50), nullable=False, default="Asia/Shanghai")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class DailyPlan(Base):
+    __tablename__ = "daily_plans"
+    __table_args__ = (UniqueConstraint("user_id", "plan_date", name="uq_daily_plans_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    plan_date: Mapped[date] = mapped_column(Date, nullable=False)
+    content: Mapped[dict] = mapped_column(JSON, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

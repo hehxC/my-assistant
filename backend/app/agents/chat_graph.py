@@ -6,7 +6,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from .config import get_settings
+from ..config import get_settings
 from .prompts.talk_agent_prompt import TALK_AGENT_PROMPT
 
 

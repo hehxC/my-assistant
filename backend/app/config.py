@@ -21,6 +21,9 @@ class Settings(BaseModel):
     # DeepSeek 的 OpenAI 兼容 API 地址。
     deepseek_base_url: str = "https://api.deepseek.com"
 
+    # 高德 Web 服务 API 的认证密钥，仅在后端调用地理编码和天气接口。
+    amap_api_key: str = ""
+
     mysql_host: str = "127.0.0.1"
     mysql_port: int = 3306
     mysql_user: str = "root"
@@ -38,6 +41,7 @@ def get_settings() -> Settings:
     return Settings(
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
         deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+        amap_api_key=os.getenv("AMAP_API_KEY", ""),
         mysql_host=os.getenv("MYSQL_HOST", "127.0.0.1"),
         mysql_port=int(os.getenv("MYSQL_PORT", "3306")),
         mysql_user=os.getenv("MYSQL_USER", "root"),
