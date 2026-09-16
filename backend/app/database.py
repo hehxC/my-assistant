@@ -2,6 +2,7 @@ from collections.abc import Generator
 
 from sqlalchemy import URL, create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.schema import CreateColumn
 
 from .config import get_settings
 
@@ -35,6 +36,35 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def sync_mysql_table_comments(table_name: str) -> None:
+    """把模型中的表和字段注释幂等同步到已经存在的 MySQL 表。"""
+
+    if engine.dialect.name != "mysql":
+        return
+
+    table = Base.metadata.tables[table_name]
+    inspector = inspect(engine)
+    existing_columns = {
+        column["name"]: column.get("comment")
+        for column in inspector.get_columns(table_name)
+    }
+    table_comment = inspector.get_table_comment(table_name).get("text")
+    quoted_table = engine.dialect.identifier_preparer.quote(table_name)
+
+    with engine.begin() as connection:
+        if table.comment and table_comment != table.comment:
+            connection.execute(
+                text(f"ALTER TABLE {quoted_table} COMMENT = :comment"),
+                {"comment": table.comment},
+            )
+        for column in table.columns:
+            if column.comment and existing_columns.get(column.name) != column.comment:
+                definition = str(CreateColumn(column).compile(dialect=engine.dialect))
+                connection.execute(
+                    text(f"ALTER TABLE {quoted_table} MODIFY COLUMN {definition}")
+                )
+
+
 def create_tables() -> None:
     from .models import ApplicationState
 
@@ -64,6 +94,37 @@ def create_tables() -> None:
             connection.execute(
                 text("ALTER TABLE plan_preferences ADD COLUMN adcode VARCHAR(20) NULL")
             )
+
+    memory_columns = {
+        column["name"] for column in inspect(engine).get_columns("long_term_memories")
+    }
+    # create_all 不修改已有表，推荐反馈功能需要幂等补齐状态和结构化详情字段。
+    with engine.begin() as connection:
+        if "feedback_status" not in memory_columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE long_term_memories "
+                    "ADD COLUMN feedback_status VARCHAR(20) NULL"
+                )
+            )
+        if "details" not in memory_columns:
+            connection.execute(
+                text("ALTER TABLE long_term_memories ADD COLUMN details JSON NULL")
+            )
+
+    memory_indexes = {
+        index["name"] for index in inspect(engine).get_indexes("long_term_memories")
+    }
+    if "ix_long_term_memories_pending_feedback" not in memory_indexes:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE INDEX ix_long_term_memories_pending_feedback "
+                    "ON long_term_memories (user_id, feedback_status, expires_at)"
+                )
+            )
+
+    sync_mysql_table_comments("long_term_memories")
 
     with SessionLocal.begin() as db:
         if db.scalar(select(ApplicationState).where(ApplicationState.id == 1)) is None:

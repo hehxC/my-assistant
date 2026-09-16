@@ -217,6 +217,21 @@ function formatDuration(totalSeconds) {
   return parts.map((part) => String(part).padStart(2, '0')).join(':')
 }
 
+function memoryChangeLabel(change) {
+  if (change.action === 'awaiting_feedback') return `等待反馈：${change.content}`
+  if (change.action === 'feedback_received') return `已记录反馈：${change.content}`
+  if (change.category === 'preference' && ['created', 'updated'].includes(change.action)) {
+    return `已更新偏好：${change.content}`
+  }
+  const labels = {
+    created: '已记住',
+    updated: '已更新记忆',
+    completed: '已完成',
+    deleted: '已忘记',
+  }
+  return `${labels[change.action] || '记忆已更新'}：${change.content}`
+}
+
 function getStartedAtTimestamp(startedAt) {
   // 后端以 UTC 写入 MySQL；没有时区后缀时，前端补上 Z 再解析。
   const normalized = /(?:Z|[+-]\d{2}:\d{2})$/.test(startedAt) ? startedAt : `${startedAt}Z`
@@ -579,7 +594,12 @@ async function sendMessage() {
     if (!response.ok) throw new Error(data.detail || '消息发送失败')
 
     // 把模型回复追加到界面，并保存展示记录。
-    messages.value.push({ role: 'assistant', content: data.content })
+    messages.value.push({
+      role: 'assistant',
+      content: data.content,
+      memoryChanges: data.memory_changes || [],
+      memoryWarning: data.memory_warning || '',
+    })
     saveMessages()
   } catch (requestError) {
     // 请求失败时保留用户输入记录，并显示可理解的错误信息。
@@ -762,6 +782,18 @@ async function logout() {
           :class="message.role"
         >
           <p class="message">{{ message.content }}</p>
+          <div
+            v-if="message.role === 'assistant' && (message.memoryChanges?.length || message.memoryWarning)"
+            class="memory-notices"
+            role="status"
+          >
+            <span v-for="change in message.memoryChanges" :key="`${change.action}-${change.content}`">
+              {{ memoryChangeLabel(change) }}
+            </span>
+            <span v-if="message.memoryWarning" class="memory-warning">
+              {{ message.memoryWarning }}
+            </span>
+          </div>
         </div>
 
         <!-- 请求期间显示回复中的加载反馈。 -->

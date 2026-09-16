@@ -1065,11 +1065,12 @@ h1 {
 /* 用户和模型消息通过对齐方向与背景色进行区分。 */
 .message-row {
   display: flex;
+  flex-direction: column;
   margin-bottom: 22px;
 }
 
-.message-row.user { justify-content: flex-end; }
-.message-row.assistant { justify-content: flex-start; }
+.message-row.user { align-items: flex-end; }
+.message-row.assistant { align-items: flex-start; }
 
 .message {
   max-width: min(82%, 34rem);
@@ -1091,6 +1092,18 @@ h1 {
   background: var(--surface-soft);
   border-bottom-left-radius: 5px;
 }
+
+.memory-notices {
+  max-width: min(82%, 34rem);
+  margin-top: 7px;
+  display: grid;
+  gap: 3px;
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.memory-notices .memory-warning { color: var(--muted); }
 
 /* 三个圆点只在等待模型回复期间显示。 */
 .typing {

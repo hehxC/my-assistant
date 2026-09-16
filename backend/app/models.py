@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -34,6 +34,65 @@ class ChatThread(Base):
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class LongTermMemory(Base):
+    __tablename__ = "long_term_memories"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "category",
+            "topic",
+            name="uq_long_term_memories_user_category_topic",
+        ),
+        Index(
+            "ix_long_term_memories_pending_feedback",
+            "user_id",
+            "feedback_status",
+            "expires_at",
+        ),
+        {"comment": "用户跨聊天线程共享的长期记忆"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True, comment="长期记忆主键"
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), index=True, nullable=False, comment="所属用户 ID"
+    )
+    category: Mapped[str] = mapped_column(
+        String(30), nullable=False, comment="记忆类别：当前目标、稳定偏好或推荐"
+    )
+    topic: Mapped[str] = mapped_column(
+        String(100), nullable=False, comment="用于合并同类记忆的规范化主题"
+    )
+    content: Mapped[str] = mapped_column(
+        String(200), nullable=False, comment="提供给聊天模型的记忆内容"
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), index=True, nullable=False, comment="记忆状态：生效或已完成"
+    )
+    source_thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("chat_threads.id"), nullable=True, comment="最近写入该记忆的聊天线程 ID"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, comment="创建时间（UTC）"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, index=True, nullable=False, comment="最后更新时间（UTC）"
+    )
+    last_confirmed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, comment="用户最后确认该记忆的时间（UTC）"
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime, index=True, nullable=True, comment="失效时间；空值表示长期有效"
+    )
+    feedback_status: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="推荐反馈状态：等待反馈或已过期"
+    )
+    details: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, comment="推荐对象、理由及特征等结构化信息"
+    )
 
 
 class ApplicationState(Base):

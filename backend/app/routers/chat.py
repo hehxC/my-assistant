@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..database import get_db
 from ..models import ChatThread
+from ..services.long_term_memory import MemoryChange
 from .auth import CurrentUser
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -24,6 +25,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     content: str
     model: str
+    memory_changes: list[MemoryChange] = Field(default_factory=list)
+    memory_warning: str | None = None
 
 
 class ChatThreadResponse(BaseModel):
@@ -105,7 +108,12 @@ async def chat(
     get_owned_thread(db, payload.thread_id, current_user.id)
 
     message = HumanMessage(content=payload.message)
-    config = {"configurable": {"thread_id": payload.thread_id}}
+    config = {
+        "configurable": {
+            "thread_id": payload.thread_id,
+            "user_id": current_user.id,
+        }
+    }
 
     try:
         # lifespan 中创建的 Graph 持有同一个 RedisSaver，并通过 thread_id 恢复历史消息。
@@ -122,4 +130,9 @@ async def chat(
     if not isinstance(reply, str):
         reply = str(reply)
 
-    return ChatResponse(content=reply, model=get_settings().deepseek_model)
+    return ChatResponse(
+        content=reply,
+        model=get_settings().deepseek_model,
+        memory_changes=result.get("memory_changes", []),
+        memory_warning=result.get("memory_warning"),
+    )
