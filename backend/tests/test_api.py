@@ -15,6 +15,7 @@ from backend.app.agents.chat_graph import create_chat_graph
 from backend.app.agents.plan_agent import PlanDraft, PlanItem
 from backend.app.agents.weather import LocationNotFoundError, ResolvedLocation
 from backend.app.main import app
+from backend.app.services.library import LibraryService
 from backend.app.models import (
     ApplicationState,
     AuthSession,
@@ -69,8 +70,16 @@ class FakePlanGraph:
         }
 
 
+class FakeLibraryWorker:
+    def __init__(self):
+        self.enqueued = []
+
+    async def enqueue(self, book_id):
+        self.enqueued.append(book_id)
+
+
 @pytest.fixture
-def api_context(monkeypatch):
+def api_context(monkeypatch, tmp_path):
     test_engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -90,8 +99,16 @@ def api_context(monkeypatch):
 
     fake_graph = FakeGraph()
     fake_plan_graph = FakePlanGraph()
+    fake_library_worker = FakeLibraryWorker()
+    library_service = LibraryService(
+        session_factory=testing_session,
+        storage_root=tmp_path / "library",
+        max_upload_bytes=1024 * 1024,
+    )
     monkeypatch.setattr(app.state, "chat_graph", fake_graph, raising=False)
     monkeypatch.setattr(app.state, "plan_graph", fake_plan_graph, raising=False)
+    monkeypatch.setattr(app.state, "library_service", library_service, raising=False)
+    monkeypatch.setattr(app.state, "library_worker", fake_library_worker, raising=False)
     app.dependency_overrides[get_db] = override_get_db
     client = TestClient(app)
 
@@ -275,7 +292,11 @@ def test_chat_thread_and_history_are_isolated(api_context):
     )
     assert response.status_code == 200
     assert response.json()["content"] == "任务已经收到。"
-    assert fake_graph.calls[0]["config"] == {"configurable": {"thread_id": thread_id}}
+    assert fake_graph.calls[0]["config"] == {
+        "configurable": {"thread_id": thread_id, "user_id": 1}
+    }
+    assert response.json()["memory_changes"] == []
+    assert response.json()["memory_warning"] is None
 
     history = alice.get(f"/api/chat/threads/{thread_id}/messages")
     assert history.status_code == 200
@@ -477,3 +498,90 @@ def test_legacy_location_without_adcode_requires_reset_but_old_plan_is_readable(
     assert response.json()["location"] is None
     assert response.json()["plan"]["summary"] == "旧计划仍可查看"
     assert response.json()["plan"]["context_summary"] == "旧天气摘要"
+
+
+def test_library_upload_list_delete_and_user_isolation(api_context):
+    alice, _, _ = api_context
+    bob = TestClient(app)
+    register(alice, "alice")
+    register(bob, "bobby")
+
+    unauthorized = TestClient(app).get("/api/library")
+    assert unauthorized.status_code == 401
+
+    uploaded = alice.post(
+        "/api/library",
+        files={"file": ("RAG 入门.txt", "书库检索内容".encode(), "text/plain")},
+    )
+    assert uploaded.status_code == 202
+    book_id = uploaded.json()["id"]
+    assert uploaded.json()["status"] == "queued"
+    assert alice.get("/api/library").json()[0]["title"] == "RAG 入门"
+
+    duplicate = alice.post(
+        "/api/library",
+        files={"file": ("副本.txt", "书库检索内容".encode(), "text/plain")},
+    )
+    assert duplicate.status_code == 409
+    assert bob.get("/api/library").json() == []
+    assert bob.get(f"/api/library/{book_id}").status_code == 404
+    assert bob.delete(f"/api/library/{book_id}").status_code == 404
+
+    assert alice.delete(f"/api/library/{book_id}").status_code == 204
+    assert alice.get("/api/library").json() == []
+
+
+def test_chat_selected_library_requires_ready_owned_book(api_context):
+    client, _, _ = api_context
+    register(client, "alice")
+    thread_id = client.post("/api/chat/threads").json()["thread_id"]
+    book_id = client.post(
+        "/api/library",
+        files={"file": ("等待处理.txt", b"content", "text/plain")},
+    ).json()["id"]
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "thread_id": thread_id,
+            "message": "书里说了什么？",
+            "rag_scope": "selected",
+            "book_ids": [book_id],
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_chat_history_restores_library_sources(api_context):
+    client, _, fake_graph = api_context
+    register(client, "alice")
+    thread_id = client.post("/api/chat/threads").json()["thread_id"]
+    fake_graph.states[thread_id] = [
+        AIMessage(
+            content="书中的回答。",
+            additional_kwargs={
+                "sources": [
+                    {
+                        "source_id": "S1",
+                        "book_id": 9,
+                        "title": "测试书",
+                        "locator": "第 3 页",
+                        "excerpt": "引用内容",
+                    }
+                ]
+            },
+        )
+    ]
+
+    history = client.get(f"/api/chat/threads/{thread_id}/messages")
+
+    assert history.status_code == 200
+    assert history.json()["messages"][0]["sources"] == [
+        {
+            "book_id": 9,
+            "title": "测试书",
+            "locator": "第 3 页",
+            "excerpt": "引用内容",
+        }
+    ]

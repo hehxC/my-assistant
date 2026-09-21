@@ -8,6 +8,8 @@
 
 “今日计划”会读取当前账号的爱好，通过 LangGraph 判断外部影响因素并从运行时工具注册表选择能力；天气只是当前默认工具，后续增加赛事或电影工具不需要修改 Graph 主流程。天气与城市解析使用高德 Web 服务，建议时段依据标准预报展示为“白天”或“夜间”。计划按账号和日期保存到 MySQL。
 
+“书库”支持上传 PDF、EPUB 和 TXT。后端在后台解析并通过阿里云百炼生成向量，分块保存在 Redis Stack 的独立向量索引中；聊天时可以检索全部书库或指定书籍，并在回复下方展示页码、章节或行号引用。
+
 桌面端侧边栏的“当人了吗”页面按天展示学习时长。默认查询最近 15 天，也可以指定开始日期和结束日期；点击柱状图日期可以查看当天的具体学习时间段，跨越午夜的会话会按每天实际覆盖的时间拆分。
 
 ## 项目结构
@@ -16,7 +18,8 @@
 backend/
 ├─ app/
 │  ├─ agents/            LangGraph、模型调用与 Agent 提示词
-│  ├─ routers/           认证、聊天、学习和爱好接口
+│  ├─ routers/           认证、聊天、学习、爱好和书库接口
+│  ├─ services/          长期记忆与书库入库/RAG 模块
 │  ├─ config.py          环境配置
 │  ├─ database.py        数据库连接与结构初始化
 │  ├─ models.py          SQLAlchemy 数据模型
@@ -74,6 +77,12 @@ npm run build
 - `DEEPSEEK_API_KEY`：DeepSeek API Key
 - `DEEPSEEK_MODEL`：模型名称，默认 `deepseek-chat`
 - `AMAP_API_KEY`：高德开放平台的 Web 服务 API Key，用于国内城市解析和天气预报
+- `DASHSCOPE_API_KEY`：阿里云百炼 API Key，用于电子书文本向量化
+- `DASHSCOPE_BASE_URL`：百炼所属地域和 Workspace 的 OpenAI 兼容接口地址
+- `DASHSCOPE_EMBEDDING_MODEL`：向量模型，默认 `text-embedding-v4`
+- `DASHSCOPE_EMBEDDING_DIMENSIONS`：向量维度，默认 `1024`
+- `LIBRARY_STORAGE_DIR`：电子书原文件目录，默认 `data/library`
+- `LIBRARY_MAX_UPLOAD_MB`：单个电子书大小限制，默认 `50`
 - `MYSQL_HOST`：MySQL 地址，默认 `127.0.0.1`
 - `MYSQL_PORT`：MySQL 端口，默认 `3306`
 - `MYSQL_USER`：MySQL 用户名，默认 `root`
@@ -97,3 +106,9 @@ npm run build
 用户明确索要具体推荐时，聊天模型会在生成回复的同一次调用中返回结构化推荐对象。电影、书籍、课程、职位、餐厅、工具和活动等推荐会分别等待反馈 7 天；到期后标记为过期但不物理删除。收到反馈后，临时推荐会被删除，并可从明确评价中保守归纳稳定偏好。
 
 自动保存、更新、完成或删除记忆后，前端会在本次助手消息下方显示独立提示。用户可以在聊天中要求助手忘记某条记忆。密码、API Key、证件、银行卡和其他敏感信息不会被自动保存。
+
+## 书库与 RAG 说明
+
+原始电子书保存在本地 `data/library`，MySQL 保存书籍归属和处理状态，Redis Stack 保存向量。书籍分块会发送给阿里云百炼生成 Embedding；聊天检索命中的片段会发送给 DeepSeek 生成回答。
+
+上传接口会立即返回，页面随后轮询后台处理进度。应用重启会恢复未完成任务；如果 Redis 中的书籍向量丢失，启动检查会重新排队生成。第一版不支持扫描 PDF 的 OCR、MOBI、在线阅读和原文件下载。

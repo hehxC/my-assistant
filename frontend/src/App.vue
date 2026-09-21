@@ -49,6 +49,15 @@ const planError = ref('')
 const planCity = ref('')
 const locationSaving = ref(false)
 const locationEditing = ref(false)
+const libraryBooks = ref([])
+const libraryLoading = ref(false)
+const libraryUploading = ref(false)
+const libraryError = ref('')
+const libraryFileInput = ref(null)
+const libraryDragActive = ref(false)
+const ragScope = ref('all')
+const selectedBookIds = ref([])
+let libraryPollTimer = null
 
 const today = new Date()
 const halfMonthAgo = new Date()
@@ -57,7 +66,12 @@ const statsStartDate = ref(formatDateInput(halfMonthAgo))
 const statsEndDate = ref(formatDateInput(today))
 
 // 输入为空或模型正在回复时，不允许重复发送。
-const canSend = computed(() => draft.value.trim() && !isLoading.value)
+const readyLibraryBooks = computed(() => libraryBooks.value.filter((book) => book.status === 'ready'))
+const canSend = computed(() => (
+  draft.value.trim()
+  && !isLoading.value
+  && (ragScope.value === 'all' || selectedBookIds.value.length > 0)
+))
 const isStudying = computed(() => activeStudySession.value !== null)
 const formattedStudyTime = computed(() => formatDuration(elapsedSeconds.value))
 const maxDailySeconds = computed(() => {
@@ -87,7 +101,10 @@ function formatDateInput(value) {
 
 onMounted(restoreLogin)
 
-onBeforeUnmount(() => clearInterval(studyTimer))
+onBeforeUnmount(() => {
+  clearInterval(studyTimer)
+  clearInterval(libraryPollTimer)
+})
 
 async function restoreLogin() {
   try {
@@ -154,9 +171,10 @@ async function initializeWorkspace(claimLegacyData = false) {
   threadId.value = localStorage.getItem(userStorageKey(THREAD_KEY)) || ''
   if (!threadId.value) {
     await createNewThread()
-    return
+  } else {
+    await loadChatHistory()
   }
-  await loadChatHistory()
+  await loadLibrary()
 }
 
 function migrateLegacyBrowserData() {
@@ -309,6 +327,126 @@ function openHobbies() {
 function openTodayPlan() {
   activeView.value = 'plans'
   loadTodayPlan()
+}
+
+function openLibrary() {
+  activeView.value = 'library'
+  loadLibrary()
+}
+
+function updateLibraryPolling() {
+  const shouldPoll = libraryBooks.value.some((book) => ['queued', 'processing'].includes(book.status))
+  if (shouldPoll && !libraryPollTimer) {
+    libraryPollTimer = setInterval(loadLibrary, 2000)
+  } else if (!shouldPoll && libraryPollTimer) {
+    clearInterval(libraryPollTimer)
+    libraryPollTimer = null
+  }
+}
+
+async function loadLibrary() {
+  if (libraryLoading.value || !currentUser.value) return
+  libraryLoading.value = true
+  libraryError.value = ''
+  try {
+    const response = await fetch('/api/library', { credentials: 'include' })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.detail || '读取书库失败')
+    libraryBooks.value = data
+    const readyIds = new Set(data.filter((book) => book.status === 'ready').map((book) => book.id))
+    selectedBookIds.value = selectedBookIds.value.filter((id) => readyIds.has(id))
+    updateLibraryPolling()
+  } catch (requestError) {
+    libraryError.value = requestError.message || '暂时无法读取书库。'
+  } finally {
+    libraryLoading.value = false
+  }
+}
+
+async function uploadBook(file) {
+  if (!file || libraryUploading.value) return
+  libraryUploading.value = true
+  libraryError.value = ''
+  const formData = new FormData()
+  formData.append('file', file)
+  try {
+    const response = await fetch('/api/library', {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.detail || '上传电子书失败')
+    libraryBooks.value.unshift(data)
+    updateLibraryPolling()
+  } catch (requestError) {
+    libraryError.value = requestError.message || '暂时无法上传电子书。'
+  } finally {
+    libraryUploading.value = false
+    if (libraryFileInput.value) libraryFileInput.value.value = ''
+  }
+}
+
+function chooseLibraryFile(event) {
+  uploadBook(event.target.files?.[0])
+}
+
+function dropLibraryFile(event) {
+  libraryDragActive.value = false
+  uploadBook(event.dataTransfer.files?.[0])
+}
+
+async function retryBook(book) {
+  libraryError.value = ''
+  try {
+    const response = await fetch(`/api/library/${book.id}/retry`, {
+      method: 'POST',
+      credentials: 'include',
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.detail || '重新处理失败')
+    const index = libraryBooks.value.findIndex((item) => item.id === book.id)
+    if (index !== -1) libraryBooks.value[index] = data
+    updateLibraryPolling()
+  } catch (requestError) {
+    libraryError.value = requestError.message || '暂时无法重新处理电子书。'
+  }
+}
+
+async function deleteBook(book) {
+  if (!window.confirm(`确定永久删除《${book.title}》吗？`)) return
+  libraryError.value = ''
+  try {
+    const response = await fetch(`/api/library/${book.id}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    if (!response.ok) {
+      const data = await response.json()
+      throw new Error(data.detail || '删除电子书失败')
+    }
+    libraryBooks.value = libraryBooks.value.filter((item) => item.id !== book.id)
+    selectedBookIds.value = selectedBookIds.value.filter((id) => id !== book.id)
+    updateLibraryPolling()
+  } catch (requestError) {
+    libraryError.value = requestError.message || '暂时无法删除电子书。'
+  }
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+function bookStatusLabel(book) {
+  return {
+    queued: '等待处理',
+    processing: book.chunk_count
+      ? `处理中 ${Math.round((book.processed_chunks / book.chunk_count) * 100)}%`
+      : '正在解析',
+    ready: '可以检索',
+    failed: '处理失败',
+  }[book.status] || book.status
 }
 
 async function loadTodayPlan() {
@@ -586,6 +724,8 @@ async function sendMessage() {
       body: JSON.stringify({
         thread_id: threadId.value,
         message: content,
+        rag_scope: ragScope.value,
+        book_ids: ragScope.value === 'selected' ? selectedBookIds.value : [],
       }),
     })
 
@@ -599,6 +739,8 @@ async function sendMessage() {
       content: data.content,
       memoryChanges: data.memory_changes || [],
       memoryWarning: data.memory_warning || '',
+      sources: data.sources || [],
+      ragWarning: data.rag_warning || '',
     })
     saveMessages()
   } catch (requestError) {
@@ -648,6 +790,11 @@ async function logout() {
     activeStudySession.value = null
     elapsedSeconds.value = 0
     hobbies.value = []
+    libraryBooks.value = []
+    selectedBookIds.value = []
+    ragScope.value = 'all'
+    clearInterval(libraryPollTimer)
+    libraryPollTimer = null
     planLocation.value = null
     todayPlan.value = null
     planCity.value = ''
@@ -741,6 +888,13 @@ async function logout() {
         >
           我的爱好
         </button>
+        <button
+          type="button"
+          :class="{ selected: activeView === 'library' }"
+          @click="openLibrary"
+        >
+          书库
+        </button>
       </nav>
       <div class="sidebar-account">
         <span>{{ currentUser.username }}</span>
@@ -794,6 +948,16 @@ async function logout() {
               {{ message.memoryWarning }}
             </span>
           </div>
+          <div v-if="message.role === 'assistant' && message.sources?.length" class="rag-sources">
+            <p>参考书库</p>
+            <article v-for="(source, sourceIndex) in message.sources" :key="`${source.book_id}-${sourceIndex}`">
+              <strong>{{ source.title }} · {{ source.locator }}</strong>
+              <span>{{ source.excerpt }}</span>
+            </article>
+          </div>
+          <span v-if="message.role === 'assistant' && message.ragWarning" class="rag-warning">
+            {{ message.ragWarning }}
+          </span>
         </div>
 
         <!-- 请求期间显示回复中的加载反馈。 -->
@@ -807,6 +971,24 @@ async function logout() {
 
       <!-- submit 事件统一支持按钮点击和 Enter 发送。 -->
       <form class="composer" @submit.prevent="sendMessage">
+        <div class="rag-scope-row">
+          <label for="rag-scope">书库范围</label>
+          <select id="rag-scope" v-model="ragScope">
+            <option value="all">全部书库</option>
+            <option value="selected" :disabled="!readyLibraryBooks.length">指定书籍</option>
+          </select>
+          <select
+            v-if="ragScope === 'selected'"
+            v-model="selectedBookIds"
+            class="book-multi-select"
+            multiple
+            aria-label="选择用于检索的书籍"
+          >
+            <option v-for="book in readyLibraryBooks" :key="book.id" :value="book.id">
+              {{ book.title }}
+            </option>
+          </select>
+        </div>
         <label for="message-input">向助手描述你的任务</label>
         <div class="input-row">
           <textarea
@@ -1058,7 +1240,7 @@ async function logout() {
       </section>
     </main>
 
-    <main v-else class="hobbies-view">
+    <main v-else-if="activeView === 'hobbies'" class="hobbies-view">
       <header class="hobbies-header">
         <p class="eyebrow">兴趣清单</p>
         <h1>我的爱好</h1>
@@ -1143,6 +1325,101 @@ async function logout() {
           </div>
         </section>
       </div>
+    </main>
+
+    <main v-else class="library-view">
+      <header class="library-header">
+        <div>
+          <p class="eyebrow">个人资料库</p>
+          <h1>书库</h1>
+          <p>上传电子书后，可以直接在助手对话中检索其中的内容。</p>
+        </div>
+        <span>{{ readyLibraryBooks.length }} 本可检索</span>
+      </header>
+
+      <section
+        class="library-dropzone"
+        :class="{ active: libraryDragActive }"
+        @dragenter.prevent="libraryDragActive = true"
+        @dragover.prevent="libraryDragActive = true"
+        @dragleave.prevent="libraryDragActive = false"
+        @drop.prevent="dropLibraryFile"
+      >
+        <input
+          ref="libraryFileInput"
+          type="file"
+          accept=".pdf,.epub,.txt"
+          hidden
+          @change="chooseLibraryFile"
+        />
+        <div>
+          <strong>{{ libraryUploading ? '正在上传' : '把电子书放到这里' }}</strong>
+          <span>支持 PDF、EPUB、TXT，单个文件不超过 50 MB</span>
+        </div>
+        <button
+          type="button"
+          :disabled="libraryUploading"
+          @click="libraryFileInput?.click()"
+        >
+          选择文件
+        </button>
+      </section>
+
+      <p v-if="libraryError" class="library-error" role="alert">{{ libraryError }}</p>
+
+      <section class="library-panel" aria-labelledby="library-list-title">
+        <div class="library-list-heading">
+          <div>
+            <p>已上传</p>
+            <h2 id="library-list-title">{{ libraryBooks.length }} 本书</h2>
+          </div>
+          <span v-if="libraryLoading">正在刷新...</span>
+        </div>
+
+        <div v-if="!libraryLoading && !libraryBooks.length" class="library-empty">
+          <strong>书库还是空的。</strong>
+          <span>上传第一本书，之后就可以在聊天中询问它的内容。</span>
+        </div>
+
+        <div v-else class="library-list">
+          <article v-for="book in libraryBooks" :key="book.id" class="library-book">
+            <div class="book-type">{{ book.file_type.toUpperCase() }}</div>
+            <div class="book-content">
+              <div class="book-title-row">
+                <div>
+                  <h3>{{ book.title }}</h3>
+                  <p>{{ book.author || book.original_filename }} · {{ formatFileSize(book.file_size) }}</p>
+                </div>
+                <span :class="`book-status ${book.status}`">{{ bookStatusLabel(book) }}</span>
+              </div>
+
+              <div v-if="book.status === 'processing' && book.chunk_count" class="book-progress">
+                <i :style="{ width: `${(book.processed_chunks / book.chunk_count) * 100}%` }"></i>
+              </div>
+              <p v-if="book.error_message" class="book-error-message">{{ book.error_message }}</p>
+
+              <div class="book-actions">
+                <button
+                  v-if="book.status === 'failed'"
+                  type="button"
+                  class="secondary"
+                  @click="retryBook(book)"
+                >
+                  重新处理
+                </button>
+                <button
+                  type="button"
+                  class="danger"
+                  :disabled="book.status === 'processing'"
+                  @click="deleteBook(book)"
+                >
+                  删除
+                </button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
     </main>
   </div>
 </template>

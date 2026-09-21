@@ -29,7 +29,7 @@ def utc_now() -> datetime:
 
 class RecommendationDetails(BaseModel):
     subject_type: str = Field(min_length=1, max_length=30)
-    subject_name: str = Fild(min_length=1, max_length=60)
+    subject_name: str = Field(min_length=1, max_length=60)
     reason: str = Field(default="", max_length=200)
     attributes: list[str] = Field(default_factory=list, max_length=5)
 
@@ -41,6 +41,7 @@ class AssistantRecommendation(RecommendationDetails):
 class ChatTurnOutput(BaseModel):
     reply: str = Field(min_length=1, max_length=8000)
     recommendations: list[AssistantRecommendation] = Field(default_factory=list, max_length=10)
+    source_ids: list[str] = Field(default_factory=list, max_length=6)
 
 
 class DerivedPreference(BaseModel):

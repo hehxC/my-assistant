@@ -153,3 +153,64 @@ class DailyPlan(Base):
     plan_date: Mapped[date] = mapped_column(Date, nullable=False)
     content: Mapped[dict] = mapped_column(JSON, nullable=False)
     generated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class LibraryBook(Base):
+    __tablename__ = "library_books"
+    __table_args__ = (
+        UniqueConstraint("user_id", "sha256", name="uq_library_books_user_sha256"),
+        Index("ix_library_books_user_status", "user_id", "status"),
+        {"comment": "用户上传并用于 RAG 检索的电子书"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True, comment="书籍主键"
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), index=True, nullable=False, comment="所属用户 ID"
+    )
+    title: Mapped[str] = mapped_column(
+        String(255), nullable=False, comment="书籍显示标题"
+    )
+    author: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, comment="从电子书元数据提取的作者"
+    )
+    original_filename: Mapped[str] = mapped_column(
+        String(255), nullable=False, comment="上传时的原始文件名"
+    )
+    file_type: Mapped[str] = mapped_column(
+        String(10), nullable=False, comment="文件类型：pdf、epub 或 txt"
+    )
+    file_size: Mapped[int] = mapped_column(
+        Integer, nullable=False, comment="原始文件大小（字节）"
+    )
+    sha256: Mapped[str] = mapped_column(
+        String(64), nullable=False, comment="文件内容 SHA-256 摘要"
+    )
+    storage_path: Mapped[str] = mapped_column(
+        String(500), nullable=False, comment="相对于书库根目录的文件路径"
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, index=True, comment="处理状态"
+    )
+    processed_chunks: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, comment="已经完成向量化的分块数"
+    )
+    chunk_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, comment="书籍文本分块总数"
+    )
+    embedding_model: Mapped[str] = mapped_column(
+        String(100), nullable=False, comment="生成向量使用的模型"
+    )
+    embedding_dimension: Mapped[int] = mapped_column(
+        Integer, nullable=False, comment="向量维度"
+    )
+    error_message: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="最近一次处理失败原因"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, comment="创建时间（UTC）"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, comment="最后更新时间（UTC）"
+    )

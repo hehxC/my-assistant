@@ -66,7 +66,7 @@ def sync_mysql_table_comments(table_name: str) -> None:
 
 
 def create_tables() -> None:
-    from .models import ApplicationState
+    from .models import ApplicationState, LibraryBook
 
     Base.metadata.create_all(bind=engine)
 
@@ -125,6 +125,7 @@ def create_tables() -> None:
             )
 
     sync_mysql_table_comments("long_term_memories")
+    sync_mysql_table_comments(LibraryBook.__tablename__)
 
     with SessionLocal.begin() as db:
         if db.scalar(select(ApplicationState).where(ApplicationState.id == 1)) is None:
